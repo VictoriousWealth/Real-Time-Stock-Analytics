@@ -1,5 +1,5 @@
 import yfinance as yf
-from dash import Dash, html, dcc, Input, Output
+from dash import Dash, html, dcc, Input, Output, dash_table
 
 tickers = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "BRK-B", "V", "JPM",
@@ -14,6 +14,36 @@ app = Dash(__name__)
 app.title = "Stock analysis"
 app.layout = html.Div(
     children = [
+        html.Div(children=[
+            html.H2("Revenue and Earnings for year 2024"),
+            dash_table.DataTable(
+                id="revenue",
+                columns=[
+                    {"name": "Date Time", "id": "index"},
+                    {"name": "Revenue", "id": "Total Revenue"},
+                ],
+                sort_action="native",
+                filter_action="native",
+            ),
+            dash_table.DataTable(
+                id="earnings",
+                columns=[
+                    {"name": "Date Time", "id": "index"},
+                    {"name": "Net Income", "id": "Net Income"},
+                ],
+                sort_action="native",
+                filter_action="native",
+            ),
+            html.P(
+                id="earnings",
+            ),
+            html.P(
+                id="eps",
+            ),
+            html.P(
+                id="price_to_earnings_ratio",
+            ),
+        ]),
         dcc.Dropdown(
             id="dropDown",
             options = [
@@ -42,13 +72,17 @@ app.layout = html.Div(
     Output("volume", "figure"),
     Output("dividends", "figure"),
     Output("stock splits", "figure"),
+    Output("revenue", "data"),
+    Output("earnings", "children"),
+    Output("eps", "children"),
+    Output("price_to_earnings_ratio", "children"),
     Input("dropDown", "value"),
 )
 
 def updateGraphs(stock):
-    data = yf.Ticker(stock).history(period="1mo", interval="1h")
-    print(data.columns)
-    longName = yf.Ticker(stock).info['longName']
+    selected_ticker = yf.Ticker(stock)
+    data = selected_ticker.history(period="1mo", interval="1h")
+    longName = selected_ticker.info['longName']
 
     traces = [
         {
@@ -132,7 +166,20 @@ def updateGraphs(stock):
             "yaxis" : {"title": "Stock Splits",},
         }
     }
-    return history_graph, volume_graph, dividens_graph, stock_splits_graph
+
+    print("Revenue = ", selected_ticker.financials.loc["Total Revenue"].reset_index().to_dict(orient="records"))
+
+    revenue = selected_ticker.financials.loc["Total Revenue"].reset_index().to_dict(orient="records")
+    earnings = "Earnings (Net Income): "+str(selected_ticker.financials.loc["Net Income"].iloc[0])
+
+    net_income = selected_ticker.financials.loc["Net Income"].iloc[0]
+    shares_outstanding = selected_ticker.info["sharesOutstanding"]
+    eps = "EPS = " + str(net_income/shares_outstanding)
+
+    price = selected_ticker.info["currentPrice"]
+    price_to_earnings_ratio = "P/E Ratio: "+str(price / (net_income/shares_outstanding))
+
+    return history_graph, volume_graph, dividens_graph, stock_splits_graph, revenue, earnings, eps, price_to_earnings_ratio
 
 
 if "__main__" == __name__:
