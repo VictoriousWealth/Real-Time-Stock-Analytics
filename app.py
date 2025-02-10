@@ -1,186 +1,162 @@
+# app.py
+import pandas as pd
 import yfinance as yf
-from dash import Dash, html, dcc, Input, Output, dash_table
+import plotly.express as px
+from dash import Dash, dcc, html, Input, Output
+import urllib.parse
+import feedparser
 
-tickers = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "BRK-B", "V", "JPM",
-    "JNJ", "WMT", "PG", "UNH", "MA", "HD", "BAC", "XOM", "PFE", "KO",
-    "PEP", "LLY", "COST", "ABBV", "MRK", "T", "DIS", "CVX", "ADBE", "NFLX",
-    "INTC", "CMCSA", "VZ", "AVGO", "CRM", "ACN", "TXN", "NEE", "PM", "NKE",
-    "AMD", "IBM", "QCOM", "AMGN", "TMO", "LOW", "ORCL", "MDT", "HON", "GE"
-]
+from single_view import layout as single_layout
+from comparison_view import layout as comparison_layout
 
-app = Dash(__name__)
+# --- Setup ---
+app = Dash(__name__, suppress_callback_exceptions=True)
+app.title = "Mini Bloomberg"
 
-app.title = "Stock analysis"
-app.layout = html.Div(
-    children = [
-        html.Div(children=[
-            html.H2("Revenue and Earnings for year 2024"),
-            dash_table.DataTable(
-                id="revenue",
-                columns=[
-                    {"name": "Date Time", "id": "index"},
-                    {"name": "Revenue", "id": "Total Revenue"},
-                ],
-                sort_action="native",
-                filter_action="native",
-            ),
-            dash_table.DataTable(
-                id="earnings",
-                columns=[
-                    {"name": "Date Time", "id": "index"},
-                    {"name": "Net Income", "id": "Net Income"},
-                ],
-                sort_action="native",
-                filter_action="native",
-            ),
-            html.P(
-                id="earnings",
-            ),
-            html.P(
-                id="eps",
-            ),
-            html.P(
-                id="price_to_earnings_ratio",
-            ),
-        ]),
-        dcc.Dropdown(
-            id="dropDown",
-            options = [
-                {"label" : yf.Ticker(t).info["shortName"], "value" : t} for t in tickers
-            ],
-            value="AAPL",
-            clearable=False,
-        ),
-        dcc.Graph(
-            id="history"
-        ),
-        dcc.Graph(
-            id="volume"
-        ),
-        dcc.Graph(
-            id="dividends"
-        ),
-        dcc.Graph(
-            id="stock splits"
-        ),
-    ]
-)
+# --- App Shell ---
+app.layout = html.Div([
+    dcc.Location(id="url"),
+    html.Div([
+        dcc.Link("Single View | ", href="/"),
+        dcc.Link("Comparison View", href="/compare")
+    ], style={"marginBottom": "20px"}),
 
+    html.Div(id="page-content")
+])
+
+# --- Router ---
+@app.callback(Output("page-content", "children"), Input("url", "pathname"))
+def display_page(pathname):
+    if pathname == "/compare":
+        return comparison_layout
+    return single_layout
+
+# ---- Helpers ----
+def render_news_list(items):
+    if not items:
+        return html.Ul([html.Li("No news available right now.")])
+    return html.Ul([html.Li(html.A(title, href=link, target="_blank")) for title, link in items])
+
+def get_headlines_yfinance(tk, limit=5):
+    try:
+        items = tk.news or []
+        out = []
+        for it in items[:limit]:
+            title = it.get("title")
+            link = it.get("link")
+            if title and link:
+                out.append((title, link))
+        return out
+    except Exception:
+        return []
+
+def get_headlines_google_rss(ticker, limit=5):
+    # Ex: https://news.google.com/rss/search?q=AAPL%20stock&hl=en-GB&gl=GB&ceid=GB:en
+    q = f"{ticker} stock"
+    url = (
+        "https://news.google.com/rss/search?q="
+        + urllib.parse.quote(q)
+        + "&hl=en-GB&gl=GB&ceid=GB:en"
+    )
+    try:
+        feed = feedparser.parse(url)
+        out = []
+        for entry in feed.entries[:limit]:
+            title = getattr(entry, "title", None)
+            link = getattr(entry, "link", None)
+            if title and link:
+                out.append((title, link))
+        return out
+    except Exception:
+        return []
+
+# --- Callbacks for Single View ---
 @app.callback(
-    Output("history", "figure"),
-    Output("volume", "figure"),
-    Output("dividends", "figure"),
-    Output("stock splits", "figure"),
-    Output("revenue", "data"),
-    Output("earnings", "children"),
-    Output("eps", "children"),
-    Output("price_to_earnings_ratio", "children"),
-    Input("dropDown", "value"),
+    [Output("price-chart", "figure"),
+     Output("volume-chart", "figure"),
+     Output("stats", "children"),
+     Output("news", "children")],
+    Input("ticker", "value")
 )
+def update_single(ticker):
+    tk = yf.Ticker(ticker)
+    hist = tk.history(period="1mo", interval="1d")
 
-def updateGraphs(stock):
-    selected_ticker = yf.Ticker(stock)
-    data = selected_ticker.history(period="1mo", interval="1h")
-    longName = selected_ticker.info['longName']
+    # Price chart
+    fig_price = px.line(
+        hist, x=hist.index, y="Close",
+        title=f"{ticker} Closing Price (1M)"
+    )
 
-    traces = [
-        {
-            "x" : data.index,
-            "y" : data["Open"],
-            "type" : "lines",
-            "name": "Open"
-        },
-        {
-            "x" : data.index,
-            "y" : data["Close"],
-            "type" : "lines",
-            "name": "Close"
-        },
-        {
-            "x" : data.index,
-            "y" : data["Low"],
-            "type" : "lines",
-            "name": "Low"
-        },
-        {
-            "x" : data.index,
-            "y" : data["High"],
-            "type" : "lines",
-            "name": "High"
-        },
-    ]
+    # Volume chart
+    fig_volume = px.bar(
+        hist, x=hist.index, y="Volume",
+        title=f"{ticker} Daily Trading Volume (1M)"
+    )
 
-    history_graph = {
-        "data": traces,
-        "layout" : {
-            "title": {"text": f"{longName}'s Metrics Over Time", "x": 0.5}, 
-            "xaxis" : {"title": "Date",},
-            "yaxis" : {"title": "Value",},
-            "legend": {"title": {"text": "Metrics"}}
-        }
-    }
+    # Fundamentals (defensive: some tickers miss fields)
+    info = tk.info
+    net_income, revenue = None, None
+    try:
+        net_income = tk.financials.loc["Net Income"].iloc[0]
+        revenue = tk.financials.loc["Total Revenue"].iloc[0]
+    except Exception:
+        pass
 
-    volume_graph = {
-        "data" : [{
-            "x" : data.index,
-            "y" : data["Volume"],
-            "type" : "lines",
-            "name": "Volume"
-        },],
-        "layout": {
-            "title": {"text": f"{longName}'s Volume Over Time", "x": 0.5}, 
-            "xaxis" : {"title": "Date",},
-            "yaxis" : {"title": "Volume",},
-        }
-    }
+    stats = html.Ul([
+        html.Li(f"Company: {info.get('shortName', 'N/A')}"),
+        html.Li(f"Current Price: {info.get('currentPrice', 'N/A')}"),
+        html.Li(f"Market Cap: {info.get('marketCap', 'N/A')}"),
+        html.Li(f"Revenue: {revenue if revenue is not None else 'N/A'}"),
+        html.Li(f"Net Income: {net_income if net_income is not None else 'N/A'}"),
+    ])
 
-    dividens_graph = {
-        "data": [
-            {
-                "x": data.index,
-                "y": data["Dividends"],
-                "type": "lines",
-                "name": "Dividends"
-            }
-        ],
-        "layout" : {
-            "title": {"text": f"{longName}'s Dividends Over Time", "x": 0.5}, 
-            "xaxis" : {"title": "Date",},
-            "yaxis" : {"title": "Volume",},
-        }
-    }
+    # News: yfinance first, then Google News RSS
+    news_items = get_headlines_yfinance(tk, limit=5)
+    if not news_items:
+        news_items = get_headlines_google_rss(ticker, limit=5)
 
-    stock_splits_graph = {
-        "data": [
-            {
-                "x": data.index,
-                "y": data["Dividends"],
-                "type": "lines",
-                "name": "Dividends"
-            }
-        ],
-        "layout" : {
-            "title": {"text": f"{longName}'s Stock Splits Over Time", "x": 0.5}, 
-            "xaxis" : {"title": "Date",},
-            "yaxis" : {"title": "Stock Splits",},
-        }
-    }
+    return fig_price, fig_volume, stats, render_news_list(news_items)
 
-    print("Revenue = ", selected_ticker.financials.loc["Total Revenue"].reset_index().to_dict(orient="records"))
+# --- Callbacks for Comparison View ---
+@app.callback(
+    [Output("comparison-chart", "figure"),
+     Output("comparison-stats", "children")],
+    [Input("ticker1", "value"),
+     Input("ticker2", "value")]
+)
+def update_compare(t1, t2):
+    t1_data, t2_data = yf.Ticker(t1), yf.Ticker(t2)
+    hist1 = t1_data.history(period="1mo", interval="1d")
+    hist2 = t2_data.history(period="1mo", interval="1d")
 
-    revenue = selected_ticker.financials.loc["Total Revenue"].reset_index().to_dict(orient="records")
-    earnings = "Earnings (Net Income): "+str(selected_ticker.financials.loc["Net Income"].iloc[0])
+    # Align on date index just in case
+    df = pd.DataFrame({t1: hist1["Close"], t2: hist2["Close"]})
+    df = df.sort_index()
 
-    net_income = selected_ticker.financials.loc["Net Income"].iloc[0]
-    shares_outstanding = selected_ticker.info["sharesOutstanding"]
-    eps = "EPS = " + str(net_income/shares_outstanding)
+    fig = px.line(
+        df, x=df.index, y=[t1, t2],
+        title=f"{t1} vs {t2} Closing Prices (1M)"
+    )
 
-    price = selected_ticker.info["currentPrice"]
-    price_to_earnings_ratio = "P/E Ratio: "+str(price / (net_income/shares_outstanding))
+    def stats_block(tk, ticker):
+        info = tk.info
+        return html.Div([
+            html.H4(ticker),
+            html.Ul([
+                html.Li(f"Price: {info.get('currentPrice', 'N/A')}"),
+                html.Li(f"Market Cap: {info.get('marketCap', 'N/A')}"),
+            ])
+        ], style={"border": "1px solid #ccc", "padding": "10px", "width": "45%"})
 
-    return history_graph, volume_graph, dividens_graph, stock_splits_graph, revenue, earnings, eps, price_to_earnings_ratio
+    panel = html.Div(
+        [stats_block(t1_data, t1), stats_block(t2_data, t2)],
+        style={"display": "flex", "gap": "10px", "justifyContent": "space-between"}
+    )
 
+    return fig, panel
 
-if "__main__" == __name__:
-    app.run_server(debug=True)
+# --- Run ---
+if __name__ == "__main__":
+    app.run(debug=True)
+
